@@ -19,7 +19,12 @@
 trampoline:
 .align 4
 .globl uservec
-uservec:    
+uservec:
+
+        # Сохраняем пользовательский a0 в sscratch, 
+        # а в a0 получаем адрес trapframe из sscratch
+        csrrw a0, sscratch, a0
+
 	#
         # trap.c sets stvec to point here, so
         # traps from user space start here,
@@ -29,12 +34,8 @@ uservec:
 
         # save user a0 in sscratch so
         # a0 can be used to get at TRAPFRAME.
-        csrw sscratch, a0
+        # csrw sscratch, a0
 
-        # each process has a separate p->trapframe memory area,
-        # but it's mapped to the same virtual address
-        # (TRAPFRAME) in every process's user page table.
-        li a0, TRAPFRAME
         
         # save the user registers in TRAPFRAME
         sd ra, 40(a0)
@@ -107,7 +108,8 @@ userret:
         csrw satp, a0
         sfence.vma zero, zero
 
-        li a0, TRAPFRAME
+        # Получаем уникальный адрес trapframe текущего потока
+        csrr a0, sscratch
 
         # restore all but a0 from TRAPFRAME
         ld ra, 40(a0)
@@ -145,5 +147,5 @@ userret:
         ld a0, 112(a0)
         
         # return to user mode and user pc.
-        # prepare_return() sets up sstatus and sepc.
+        # usertrapret() set up sstatus and sepc.
         sret

@@ -18,24 +18,30 @@ struct run {
   struct run *next;
 };
 
+// ИЗМЕНЕНО: Теперь kmem - это массив, по одной структуре на каждый CPU
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void *)PHYSTOP);
+  char name[8];
+  for(int i = 0; i < NCPU; i++) {
+    // Инициализируем блокировку для каждого процессора отдельно
+    // snprintf(name, sizeof(name), "kmem_%d", i);
+    initlock(&kmem[i].lock, name);
+  }
+  freerange(end, (void*)PHYSTOP);
 }
 
 void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
-  p = (char *)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
+  p = (char*)PGROUNDUP((uint64)pa_start);
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
 
@@ -48,18 +54,24 @@ kfree(void *pa)
 {
   struct run *r;
 
-  if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
-  r = (struct run *)pa;
+  r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  // ИЗМЕНЕНО: Безопасно получаем ID текущего процессора
+  push_off(); 
+  int id = cpuid();
+
+  acquire(&kmem[id].lock);
+  r->next = kmem[id].freelist;
+  kmem[id].freelist = r;
+  release(&kmem[id].lock);
+  
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,13 +82,58 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if (r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  // ИЗМЕНЕНО: Безопасно получаем ID текущего процессора
+  push_off(); 
+  int id = cpuid();
 
-  if (r)
-    memset((char *)r, 5, PGSIZE); // fill with junk
-  return (void *)r;
+  // Пытаемся взять страницу из своего локального списка
+  acquire(&kmem[id].lock);
+  r = kmem[id].freelist;
+  if(r)
+    kmem[id].freelist = r->next;
+  release(&kmem[id].lock);
+
+  // ИЗМЕНЕНО: Механизм "воровства". 
+  // Если свой список пуст, ищем свободную страницу у других процессоров.
+  if(!r) {
+    for(int i = 0; i < NCPU; i++) {
+      if(i == id) continue; // Себя пропускаем
+      
+      acquire(&kmem[i].lock);
+      r = kmem[i].freelist;
+      if(r) {
+        kmem[i].freelist = r->next;
+        release(&kmem[i].lock);
+        break; // Успешно украли одну страницу, прекращаем поиск
+      }
+      release(&kmem[i].lock);
+    }
+  }
+
+  pop_off();
+
+  if(r)
+    memset((char*)r, 5, PGSIZE); // fill with junk
+  return (void*)r;
+}
+
+// custom free memory size syscall
+uint64
+getfreemem(void)
+{
+    uint64 count = 0;
+    struct run *r;
+    
+    // ИЗМЕНЕНО: Теперь нам нужно просуммировать память со всех процессоров
+    for(int i = 0; i < NCPU; i++) {
+        acquire(&kmem[i].lock);
+        r = kmem[i].freelist;
+        while (r) {
+            count++;
+            r = r->next;
+        }
+        release(&kmem[i].lock);
+    }
+    
+    return count * PGSIZE;  // размер в байтах
 }

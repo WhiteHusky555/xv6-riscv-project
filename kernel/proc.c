@@ -33,12 +33,12 @@ void
 proc_mapstacks(pagetable_t kpgtbl)
 {
   struct proc *p;
-
-  for (p = proc; p < &proc[NPROC]; p++) {
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
     char *pa = kalloc();
-    if (pa == 0)
+    if(pa == 0)
       panic("kalloc");
-    uint64 va = KSTACK((int)(p - proc));
+    uint64 va = KSTACK((int) (p - proc));
     kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   }
 }
@@ -48,13 +48,13 @@ void
 procinit(void)
 {
   struct proc *p;
-
+  
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
-  for (p = proc; p < &proc[NPROC]; p++) {
-    initlock(&p->lock, "proc");
-    p->state = UNUSED;
-    p->kstack = KSTACK((int)(p - proc));
+  for(p = proc; p < &proc[NPROC]; p++) {
+      initlock(&p->lock, "proc");
+      p->state = UNUSED;
+      p->kstack = KSTACK((int) (p - proc));
   }
 }
 
@@ -70,7 +70,7 @@ cpuid()
 
 // Return this CPU's cpu struct.
 // Interrupts must be disabled.
-struct cpu *
+struct cpu*
 mycpu(void)
 {
   int id = cpuid();
@@ -79,7 +79,7 @@ mycpu(void)
 }
 
 // Return the current struct proc *, or zero if none.
-struct proc *
+struct proc*
 myproc(void)
 {
   push_off();
@@ -93,7 +93,7 @@ int
 allocpid()
 {
   int pid;
-
+  
   acquire(&pid_lock);
   pid = nextpid;
   nextpid = nextpid + 1;
@@ -106,14 +106,14 @@ allocpid()
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
-static struct proc *
+static struct proc*
 allocproc(void)
 {
   struct proc *p;
 
-  for (p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if (p->state == UNUSED) {
+    if(p->state == UNUSED) {
       goto found;
     } else {
       release(&p->lock);
@@ -125,28 +125,60 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
-  // Allocate a trapframe page.
-  if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
+  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // An empty user page table.
+  p->trapframe_va = TRAPFRAME;
+
   p->pagetable = proc_pagetable(p);
-  if (p->pagetable == 0) {
+  if(p->pagetable == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+  // Инициализация ядерной таблицы страниц процесса
+  p->kpagetable = proc_kpagetable(p);
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Настройка контекста для начала выполнения с forkret.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+// Вспомогательная функция для очистки kpagetable
+void
+proc_free_kpagetable(pagetable_t kpt, uint64 sz)
+{
+  // Мы больше не используем uvmunmap и freewalk для kpagetable, 
+  // так как это вызывает панику на ядерных маппингах.
+  // Используем нашу новую безопасную функцию очистки.
+  free_kpagetable(kpt);
+}
+
+// Проверяет, используют ли другие процессы (потоки) эту таблицу страниц
+int is_table_shared(pagetable_t pt) {
+  struct proc *tmp;
+  int count = 0;
+  for(tmp = proc; tmp < &proc[NPROC]; tmp++){
+    // Мы НЕ захватываем tmp->lock здесь, чтобы не вызвать deadlock, 
+    // но проверяем состояние атомарно.
+    // Считаем только те процессы, которые реально используют память (не UNUSED и не ZOMBIE)
+    if(tmp->pagetable == pt && tmp->state != UNUSED && tmp->state != ZOMBIE) {
+      count++;
+    }
+  }
+  return count > 0; // Если есть хоть один живой поток, кроме текущего — память общая
 }
 
 // free a proc structure and the data hanging from it,
@@ -155,12 +187,28 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  if (p->trapframe)
-    kfree((void *)p->trapframe);
+  if(p->trapframe) {
+    // ВАЖНО: kfree(p->trapframe) можно делать, так как у каждого 
+    // потока свой физический trapframe (мы выделяли его в allocproc).
+    kfree((void*)p->trapframe);
+  }
   p->trapframe = 0;
-  if (p->pagetable)
+
+  // Удаляем персональную таблицу страниц ядра (она есть у каждого потока)
+  if(p->kpagetable)
+    proc_free_kpagetable(p->kpagetable, p->sz);
+  p->kpagetable = 0;
+
+// КРИТИЧНО: Удаляем таблицу страниц только если живых потоков больше нет.
+  // Мы делаем это здесь, потому что freeproc вызывается либо для последнего процесса (fork),
+  // либо для потока в join(), когда он уже ZOMBIE.
+  if(p->pagetable && !is_table_shared(p->pagetable)) {
     proc_freepagetable(p->pagetable, p->sz);
-  p->pagetable = 0;
+  }
+  
+  // Обнуляем указатель, чтобы другие потоки не пытались 
+  // использовать этот адрес в is_table_shared
+  p->pagetable = 0; 
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -180,23 +228,23 @@ proc_pagetable(struct proc *p)
 
   // An empty page table.
   pagetable = uvmcreate();
-  if (pagetable == 0)
+  if(pagetable == 0)
     return 0;
 
   // map the trampoline code (for system call return)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
-  if (mappages(pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline,
-               PTE_R | PTE_X) < 0) {
+  if(mappages(pagetable, TRAMPOLINE, PGSIZE,
+              (uint64)trampoline, PTE_R | PTE_X) < 0){
     uvmfree(pagetable, 0);
     return 0;
   }
 
   // map the trapframe page just below the trampoline page, for
   // trampoline.S.
-  if (mappages(pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe),
-               PTE_R | PTE_W) < 0) {
+  if(mappages(pagetable, TRAPFRAME, PGSIZE,
+              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
@@ -223,8 +271,13 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-
+  
   p->cwd = namei("/");
+
+  // p->sz сейчас равен 0.
+  // u2kvmcopy безопасно отработает и ничего не сломает, но это хорошая 
+  // практика — всегда синхронизировать таблицы после создания процесса.
+  u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);
 
   p->state = RUNNABLE;
 
@@ -238,22 +291,42 @@ growproc(int n)
 {
   uint64 sz;
   struct proc *p = myproc();
-
+  acquire(&wait_lock); // ЗАЩИЩАЕМ изменение общей памяти
   sz = p->sz;
-  if (n > 0) {
-    if (sz + n > TRAPFRAME) {
+  uint64 old_sz = sz;
+
+  if(n > 0){
+  if(sz + n > PLIC) {
+      release(&wait_lock); // ДОБАВЛЕНО: освобождаем замок перед выходом
       return -1;
     }
-    if ((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+  if((sz = uvmalloc(p->pagetable, old_sz, old_sz + n, PTE_W)) == 0) {
+      release(&wait_lock); // ДОБАВЛЕНО: освобождаем замок перед выходом
       return -1;
     }
-  } else if (n < 0) {
+    // СИНХРОНИЗАЦИЯ: Обновляем kpagetable у ВСЕХ потоков с этой же pagetable
+    struct proc *tmp;
+    for(tmp = proc; tmp < &proc[NPROC]; tmp++) {
+      if(tmp->pagetable == p->pagetable && tmp->state != UNUSED) {
+        // Каждый поток должен знать о новой памяти в своей ядерной таблице
+        u2kvmcopy(tmp->pagetable, tmp->kpagetable, old_sz, sz);
+        tmp->sz = sz; 
+      }
+    }
+  } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // Для уменьшения достаточно обновить лимит sz у всех
+    struct proc *tmp;
+    for(tmp = proc; tmp < &proc[NPROC]; tmp++) {
+      if(tmp->pagetable == p->pagetable) tmp->sz = sz;
+    }
   }
-  p->sz = sz;
+  release(&wait_lock);
   return 0;
 }
 
+// Create a new process, copying the parent.
+// Sets up child kernel stack to return as if from fork() system call.
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 int
@@ -264,17 +337,23 @@ kfork(void)
   struct proc *p = myproc();
 
   // Allocate process.
-  if ((np = allocproc()) == 0) {
+  if((np = allocproc()) == 0){
     return -1;
   }
 
   // Copy user memory from parent to child.
-  if (uvmcopy(p->pagetable, np->pagetable, p->sz) < 0) {
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
   np->sz = p->sz;
+
+  // ========== КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ==========
+  // Идеальное место для синхронизации: память скопирована, 
+  // но процесс еще недоступен для планировщика.
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);
+  // ===============================================
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -283,8 +362,8 @@ kfork(void)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  for (i = 0; i < NOFILE; i++)
-    if (p->ofile[i])
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
@@ -300,6 +379,7 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  // Процесс полностью сформирован и готов к выполнению.
   release(&np->lock);
 
   return pid;
@@ -312,8 +392,8 @@ reparent(struct proc *p)
 {
   struct proc *pp;
 
-  for (pp = proc; pp < &proc[NPROC]; pp++) {
-    if (pp->parent == p) {
+  for(pp = proc; pp < &proc[NPROC]; pp++){
+    if(pp->parent == p){
       pp->parent = initproc;
       wakeup(initproc);
     }
@@ -328,12 +408,12 @@ kexit(int status)
 {
   struct proc *p = myproc();
 
-  if (p == initproc)
+  if(p == initproc)
     panic("init exiting");
 
   // Close all open files.
-  for (int fd = 0; fd < NOFILE; fd++) {
-    if (p->ofile[fd]) {
+  for(int fd = 0; fd < NOFILE; fd++){
+    if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
@@ -352,7 +432,7 @@ kexit(int status)
 
   // Parent might be sleeping in wait().
   wakeup(p->parent);
-
+  
   acquire(&p->lock);
 
   p->xstate = status;
@@ -376,20 +456,20 @@ kwait(uint64 addr)
 
   acquire(&wait_lock);
 
-  for (;;) {
+  for(;;){
     // Scan through table looking for exited children.
     havekids = 0;
-    for (pp = proc; pp < &proc[NPROC]; pp++) {
-      if (pp->parent == p) {
+    for(pp = proc; pp < &proc[NPROC]; pp++){
+      if(pp->parent == p){
         // make sure the child isn't still in exit() or swtch().
         acquire(&pp->lock);
 
         havekids = 1;
-        if (pp->state == ZOMBIE) {
+        if(pp->state == ZOMBIE){
           // Found one.
           pid = pp->pid;
-          if (addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
-                                   sizeof(pp->xstate)) < 0) {
+          if(addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
+                                  sizeof(pp->xstate)) < 0) {
             release(&pp->lock);
             release(&wait_lock);
             return -1;
@@ -404,13 +484,13 @@ kwait(uint64 addr)
     }
 
     // No point waiting if we don't have any children.
-    if (!havekids || killed(p)) {
+    if(!havekids || killed(p)){
       release(&wait_lock);
       return -1;
     }
-
+    
     // Wait for a child to exit.
-    sleep(p, &wait_lock); //DOC: wait-sleep
+    sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
 
@@ -428,7 +508,7 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
-  for (;;) {
+  for(;;){
     // The most recent process to run may have had interrupts
     // turned off; enable them to avoid a deadlock if all
     // processes are waiting. Then turn them back off
@@ -438,25 +518,29 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
+    for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
+      if(p->state == RUNNABLE) {
         p->state = RUNNING;
         c->proc = p;
+
+        // ИЗМЕНЕНИЕ: Переключаем MMU на персональную таблицу страниц ядра процесса.
+        // Это позволяет ядру использовать copyin/copyinstr напрямую через memmove.
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma(); // Очистка кэша TLB
+
         swtch(&c->context, &p->context);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        // ИЗМЕНЕНИЕ: После возврата из процесса переключаемся обратно на
+        // глобальную таблицу страниц ядра (используем стандартную функцию xv6).
+        kvminithart();
+
         c->proc = 0;
         found = 1;
       }
       release(&p->lock);
     }
-    if (found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+    if(found == 0) {
       asm volatile("wfi");
     }
   }
@@ -475,13 +559,13 @@ sched(void)
   int intena;
   struct proc *p = myproc();
 
-  if (!holding(&p->lock))
+  if(!holding(&p->lock))
     panic("sched p->lock");
-  if (mycpu()->noff != 1)
+  if(mycpu()->noff != 1)
     panic("sched locks");
-  if (p->state == RUNNING)
+  if(p->state == RUNNING)
     panic("sched RUNNING");
-  if (intr_get())
+  if(intr_get())
     panic("sched interruptible");
 
   intena = mycpu()->intena;
@@ -520,11 +604,11 @@ forkret(void)
 
     first = 0;
     // ensure other cores see first=0.
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    __sync_synchronize();
 
     // We can invoke kexec() now that file system is initialized.
     // Put the return value (argc) of kexec into a0.
-    p->trapframe->a0 = kexec("/init", (char *[]){"/init", 0});
+    p->trapframe->a0 = kexec("/init", (char *[]){ "/init", 0 });
     if (p->trapframe->a0 == -1) {
       panic("exec");
     }
@@ -543,7 +627,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-
+  
   // Must acquire p->lock in order to
   // change p->state and then call sched.
   // Once we hold p->lock, we can be
@@ -551,17 +635,28 @@ sleep(void *chan, struct spinlock *lk)
   // (wakeup locks p->lock),
   // so it's okay to release lk.
 
-  acquire(&p->lock); //DOC: sleeplock1
+  acquire(&p->lock);  //DOC: sleeplock1
   release(lk);
 
-  // Go to sleep.
-  p->chan = chan;
-  p->state = SLEEPING;
+  // ========== КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ==========
+  // Проверяем, не был ли процесс убит в промежутке 
+  // между проверкой в пользовательском коде и вызовом sleep.
+  if(p->killed) {
+    // Если процесс убит, мы НЕ переводим его в состояние SLEEPING
+    // и НЕ вызываем планировщик. Процесс просто вернется из sleep()
+    // обратно в свой цикл (например, в piperead), где снова проверит 
+    // p->killed и благополучно завершит системный вызов.
+  } else {
+    // Go to sleep.
+    p->chan = chan;
+    p->state = SLEEPING;
 
-  sched();
+    sched();
 
-  // Tidy up.
-  p->chan = 0;
+    // Tidy up.
+    p->chan = 0;
+  }
+  // ===============================================
 
   // Reacquire original lock.
   release(&p->lock);
@@ -575,10 +670,10 @@ wakeup(void *chan)
 {
   struct proc *p;
 
-  for (p = proc; p < &proc[NPROC]; p++) {
-    if (p != myproc()) {
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p != myproc()){
       acquire(&p->lock);
-      if (p->state == SLEEPING && p->chan == chan) {
+      if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
       }
       release(&p->lock);
@@ -594,11 +689,11 @@ kkill(int pid)
 {
   struct proc *p;
 
-  for (p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if (p->pid == pid) {
+    if(p->pid == pid){
       p->killed = 1;
-      if (p->state == SLEEPING) {
+      if(p->state == SLEEPING){
         // Wake process from sleep().
         p->state = RUNNABLE;
       }
@@ -622,7 +717,7 @@ int
 killed(struct proc *p)
 {
   int k;
-
+  
   acquire(&p->lock);
   k = p->killed;
   release(&p->lock);
@@ -636,7 +731,7 @@ int
 either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
 {
   struct proc *p = myproc();
-  if (user_dst) {
+  if(user_dst){
     return copyout(p->pagetable, dst, src, len);
   } else {
     memmove((char *)dst, src, len);
@@ -651,10 +746,10 @@ int
 either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 {
   struct proc *p = myproc();
-  if (user_src) {
+  if(user_src){
     return copyin(p->pagetable, dst, src, len);
   } else {
-    memmove(dst, (char *)src, len);
+    memmove(dst, (char*)src, len);
     return 0;
   }
 }
@@ -666,27 +761,127 @@ void
 procdump(void)
 {
   static char *states[] = {
-    // clang-format off
-    [UNUSED]    "unused",
-    [USED]      "used",
-    [SLEEPING]  "sleep ",
-    [RUNNABLE]  "runble",
-    [RUNNING]   "run   ",
-    [ZOMBIE]    "zombie"
-    // clang-format on
+  [UNUSED]    "unused",
+  [USED]      "used",
+  [SLEEPING]  "sleep ",
+  [RUNNABLE]  "runble",
+  [RUNNING]   "run   ",
+  [ZOMBIE]    "zombie"
   };
   struct proc *p;
   char *state;
 
-  printk("\n");
-  for (p = proc; p < &proc[NPROC]; p++) {
-    if (p->state == UNUSED)
+  printf("\n");
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state == UNUSED)
       continue;
-    if (p->state >= 0 && p->state < NELEM(states) && states[p->state])
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
       state = states[p->state];
     else
       state = "???";
-    printk("%d %s %s", p->pid, state, p->name);
-    printk("\n");
+    printf("%d %s %s", p->pid, state, p->name);
+    printf("\n");
+  }
+}
+
+int clone(uint64 fcn, uint64 arg, uint64 stack) {
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  if((np = allocproc()) == 0) return -1;
+
+  // Очищаем дефолтную таблицу страниц от allocproc
+  proc_freepagetable(np->pagetable, 0);
+  
+  np->pagetable = p->pagetable; 
+  np->sz = p->sz;
+
+  // КРИТИЧНО: Синхронизируем KPT нового потока с текущей памятью родителя
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);
+
+  *(np->trapframe) = *(p->trapframe);
+  np->trapframe->kernel_sp = np->kstack + PGSIZE; 
+  np->trapframe->a0 = arg;
+  np->trapframe->epc = fcn;
+  np->trapframe->sp = stack;
+
+  // Безопасное вычисление адреса: используем индекс в массиве proc
+  int idx = (int)(np - proc);
+  np->trapframe_va = TRAPFRAME - ((idx + 1) * PGSIZE);
+
+  acquire(&wait_lock); // Блокируем перед изменением общей pagetable
+  if(mappages(np->pagetable, np->trapframe_va, PGSIZE, (uint64)(np->trapframe), PTE_R | PTE_W) < 0){
+    np->pagetable = 0; 
+    // acquire(&np->lock);
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  release(&wait_lock);
+
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i]) np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+  safestrcpy(np->name, p->name, sizeof(p->name));
+  pid = np->pid;
+
+  release(&np->lock);
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  release(&np->lock);
+
+  return pid;
+}
+
+int join(uint64 stack_ptr) {
+  struct proc *pp;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+  for(;;){
+    havekids = 0;
+    for(pp = proc; pp < &proc[NPROC]; pp++){
+      if(pp->parent == p && pp->pagetable == p->pagetable){
+        havekids = 1;
+        acquire(&pp->lock);
+        if(pp->state == ZOMBIE){
+          // 1. Сначала копируем данные, пока структура pp жива и заблокирована
+          uint64 user_stack = pp->trapframe->sp;
+          if(copyout(p->pagetable, stack_ptr, (char*)&user_stack, sizeof(uint64)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1; // Ошибка копирования адреса стека в user-space
+          }
+          
+          pid = pp->pid;
+
+          // 2. Убираем маппинг trapframe из общей таблицы страниц
+          // do_free = 0, так как физическую страницу очистит kfree() внутри freeproc
+          uvmunmap(p->pagetable, pp->trapframe_va, 1, 0);
+
+          // 3. КРИТИЧНО: Отвязываем общую таблицу, чтобы freeproc не удалил память родителя
+          pp->pagetable = 0; 
+          
+          freeproc(pp); // Здесь удалится kpagetable и trapframe этого потока
+          
+          release(&pp->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&pp->lock);
+      }
+    }
+    // Если потоков больше нет или процесс убит — выходим
+    if(!havekids || killed(p)){
+      release(&wait_lock);
+      return -1;
+    }
+    sleep(p, &wait_lock); // Ждем, пока какой-нибудь поток станет ZOMBIE
   }
 }

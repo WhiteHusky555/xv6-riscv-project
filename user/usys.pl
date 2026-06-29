@@ -42,4 +42,13 @@ entry("getpid");
 entry("sbrk");
 entry("pause");
 entry("uptime");
-entry("sync");
+
+entry("getfreemem");
+
+entry("printpagetable");
+
+entry("kht_put");
+entry("kht_get");
+entry("kht_clear");
+entry("clone");
+entry("join");

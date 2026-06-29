@@ -1,4 +1,3 @@
-// clang-format off
 struct buf;
 struct context;
 struct file;
@@ -73,10 +72,10 @@ void            pipeclose(struct pipe*, int);
 int             piperead(struct pipe*, uint64, int);
 int             pipewrite(struct pipe*, uint64, int);
 
-// printk.c
-int             printk(char*, ...) __attribute__ ((format (printf, 1, 2)));
+// printf.c
+int             printf(char*, ...) __attribute__ ((format (printf, 1, 2)));
 void            panic(char*) __attribute__((noreturn));
-void            printkinit(void);
+void            printfinit(void);
 
 // proc.c
 int             cpuid(void);
@@ -149,6 +148,7 @@ void            uartinit(void);
 void            uartintr(void);
 void            uartwrite(char [], int);
 void            uartputc_sync(int);
+int             uartgetc(void);
 
 // vm.c
 void            kvminit(void);
@@ -169,6 +169,12 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+void            vmprint(pagetable_t);     // lab3_2
+// lab 4_1
+void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
+pagetable_t     proc_kpagetable(struct proc *);
+void            freewalk(pagetable_t);
+void            free_kpagetable(pagetable_t);
 
 // plic.c
 void            plicinit(void);
@@ -182,4 +188,18 @@ void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
-#define NELEM(x) (sizeof(x) / sizeof((x)[0]))
+#define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// khastable.c
+void            kht_init(void);
+void            kht_put(uint, uint);
+int             kht_get(uint);
+void            kht_dump(void);
+
+// khastable_test.c
+void            kht_test(void);
+void            kht_clear(void);
+
+// pthread_test.c
+int             clone(uint64, uint64, uint64);
+int             join(uint64);
