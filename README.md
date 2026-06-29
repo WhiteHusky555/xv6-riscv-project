@@ -107,7 +107,7 @@ sudo apt-get install git build-essential gdb-multiarch \
 
 ```bash
 # 1. Склонировать репозиторий
-git clone <url_вашего_репозитория>
+git clone https://github.com/WhiteHusky555/xv6-riscv-project.git
 cd xv6-riscv
 
 # 2. Сборка и запуск в QEMU (4 ядра по умолчанию)
