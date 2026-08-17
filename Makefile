@@ -29,6 +29,7 @@ OBJS = \
   $K/kernelvec.o \
   $K/plic.o \
   $K/virtio_disk.o \
+  $K/virtio_net.o \
   $K/khashtable.o \
 
 
@@ -158,11 +159,12 @@ UPROGS=\
 	$U/_kht_test \
 	$U/_pthread_test\
 	$U/_kill_slp_test\
-	
+	$U/_nettest\
 
 
-fs.img: mkfs/mkfs README $(UPROGS)
-	mkfs/mkfs fs.img README $(UPROGS)
+
+fs.img: mkfs/mkfs README README.md $(UPROGS)
+	mkfs/mkfs fs.img README README.md $(UPROGS)
 
 -include kernel/*.d user/*.d
 
@@ -188,6 +190,12 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+# emulated Ethernet card, second virtio-mmio slot (VIRTIO1 in memlayout.h).
+# "user" networking (SLIRP) needs no host privileges/tap device: the guest
+# gets a virtual segment with a gateway/DNS at 10.0.2.2, which is enough to
+# exercise the driver (see user/nettest.c) without touching the host network.
+QEMUOPTS += -netdev user,id=net0
+QEMUOPTS += -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1
 
 qemu: check-qemu-version $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)

@@ -162,10 +162,52 @@ uint64 sys_clone(void) {
 
 uint64 sys_join(void) {
   uint64 stack_addr;
-  
+
   // Достаем первый аргумент системного вызова (указатель, куда мы запишем адрес стека)
   argaddr(0, &stack_addr);
-  
+
   // Вызываем настоящую ядерную функцию, которую мы написали в proc.c
   return join(stack_addr);
+}
+
+// ethernet driver (kernel/virtio_net.c): thin syscall wrappers, all the
+// user<->kernel copying happens inside net_tx/net_rx/net_getmac themselves.
+
+// int netsend(char *frame, int len);
+// send a raw Ethernet frame (starting at the destination MAC address).
+// returns len on success, -1 on error.
+uint64
+sys_netsend(void)
+{
+  uint64 addr;
+  int len;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  return net_tx(addr, len);
+}
+
+// int netrecv(char *buf, int maxlen);
+// non-blocking: returns 0 if no frame has arrived yet, the frame
+// length on success, -1 on error.
+uint64
+sys_netrecv(void)
+{
+  uint64 addr;
+  int maxlen;
+
+  argaddr(0, &addr);
+  argint(1, &maxlen);
+  return net_rx(addr, maxlen);
+}
+
+// int netmac(char buf[6]);
+// fetch the NIC's own MAC address. returns 0 on success, -1 on error.
+uint64
+sys_netmac(void)
+{
+  uint64 addr;
+
+  argaddr(0, &addr);
+  return net_getmac(addr);
 }

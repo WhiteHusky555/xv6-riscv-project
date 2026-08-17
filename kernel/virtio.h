@@ -94,3 +94,40 @@ struct virtio_blk_req {
   uint32 reserved;
   uint64 sector;
 };
+
+// these are specific to virtio network devices (Ethernet cards),
+// described in Section 5.1 of the spec.
+
+// device feature bits we care about; the rest (checksum offload,
+// GSO, merge-able rx buffers, control queue, multiqueue, ...) are
+// left un-negotiated on purpose so that the on-the-wire header stays
+// the plain 10-byte struct virtio_net_hdr below.
+#define VIRTIO_NET_F_CSUM      0
+#define VIRTIO_NET_F_MAC       5  // device has a built-in MAC address
+#define VIRTIO_NET_F_MRG_RXBUF 15
+#define VIRTIO_NET_F_STATUS    16
+#define VIRTIO_NET_F_CTRL_VQ   17
+#define VIRTIO_NET_F_MQ        22
+
+// offset of the device-specific configuration space in the mmio
+// register file (virtio-mmio spec section 4.2.2). struct
+// virtio_net_config starts here; its first 6 bytes are the MAC.
+#define VIRTIO_MMIO_CONFIG 0x100
+
+// gso_type: we never negotiate any GSO feature, so this is always
+// VIRTIO_NET_HDR_GSO_NONE, meaning "ordinary, non-segmented packet".
+#define VIRTIO_NET_HDR_GSO_NONE 0
+
+// the header every network packet is prefixed with, both when we
+// transmit and when the device delivers a received packet to us
+// (spec section 5.1.6.1). since we don't negotiate
+// VIRTIO_NET_F_MRG_RXBUF, this header has no num_buffers field and
+// is exactly 10 bytes.
+struct virtio_net_hdr {
+  uint8  flags;
+  uint8  gso_type;
+  uint16 hdr_len;
+  uint16 gso_size;
+  uint16 csum_start;
+  uint16 csum_offset;
+} __attribute__((packed));

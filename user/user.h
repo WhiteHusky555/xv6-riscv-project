@@ -59,3 +59,10 @@ int kht_get(int);
 void kht_clear(void);
 int clone(uint64 fcn, uint64 arg, uint64 stack);
 int join(uint64 stack_addr);
+
+// ethernet driver (kernel/virtio_net.c), raw link-layer access: a
+// "frame" is exactly what goes on the wire starting at the
+// destination MAC (struct eth_hdr in kernel/net.h), no IP stack.
+int netsend(char *frame, int len);      // send a frame; len on success, -1 on error
+int netrecv(char *buf, int maxlen);     // non-blocking; 0 = nothing yet, -1 = error
+int netmac(char mac[6]);                // fetch our own MAC address

@@ -52,3 +52,7 @@ entry("kht_get");
 entry("kht_clear");
 entry("clone");
 entry("join");
+
+entry("netsend");
+entry("netrecv");
+entry("netmac");

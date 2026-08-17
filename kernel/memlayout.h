@@ -25,6 +25,12 @@
 #define VIRTIO0 0x10001000
 #define VIRTIO0_IRQ 1
 
+// qemu's "virt" board exposes several virtio-mmio transport slots,
+// 0x1000 bytes apart, one IRQ each (irq = slot + 1). slot 0 (VIRTIO0)
+// is wired to the disk above; slot 1 is our Ethernet card.
+#define VIRTIO1 0x10002000
+#define VIRTIO1_IRQ 2
+
 // qemu puts platform-level interrupt controller (PLIC) here.
 #define PLIC 0x0c000000L
 #define PLIC_PRIORITY (PLIC + 0x0)

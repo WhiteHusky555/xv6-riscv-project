@@ -111,6 +111,10 @@ extern uint64 sys_kht_get(void);
 extern uint64 sys_kht_clear(void);
 extern uint64 sys_clone(void);
 extern uint64 sys_join(void);
+// ethernet driver
+extern uint64 sys_netsend(void);
+extern uint64 sys_netrecv(void);
+extern uint64 sys_netmac(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -146,6 +150,10 @@ static uint64 (*syscalls[])(void) = {
 [SYS_kht_clear] sys_kht_clear,
 [SYS_clone]   sys_clone,
 [SYS_join]    sys_join,
+// ethernet driver
+[SYS_netsend] sys_netsend,
+[SYS_netrecv] sys_netrecv,
+[SYS_netmac]  sys_netmac,
 };
 
 void

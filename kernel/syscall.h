@@ -30,3 +30,7 @@
 #define SYS_kht_clear 26
 #define SYS_clone 27
 #define SYS_join   28
+// ethernet driver (virtio_net.c)
+#define SYS_netsend 29
+#define SYS_netrecv 30
+#define SYS_netmac  31

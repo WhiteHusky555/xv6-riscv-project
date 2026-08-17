@@ -33,6 +33,9 @@ kvmmake(void)
   // virtio mmio disk interface
   kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
+  // virtio mmio network interface
+  kvmmap(kpgtbl, VIRTIO1, VIRTIO1, PGSIZE, PTE_R | PTE_W);
+
   // PLIC
   kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
 
@@ -512,6 +515,7 @@ proc_kpagetable(struct proc *p)
   // 1. Стандартные маппинги ядра из kvmmake
   if(mappages(kpt, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0) goto err;
   if(mappages(kpt, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0) goto err;
+  if(mappages(kpt, VIRTIO1, PGSIZE, VIRTIO1, PTE_R | PTE_W) != 0) goto err;
   if(mappages(kpt, PLIC, 0x4000000, PLIC, PTE_R | PTE_W) != 0) goto err;
   if(mappages(kpt, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0) goto err;
   if(mappages(kpt, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0) goto err;

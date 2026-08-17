@@ -30,6 +30,7 @@ main()
     iinit();         // inode table
     fileinit();      // file table
     virtio_disk_init(); // emulated hard disk
+    virtio_net_init(); // emulated ethernet card
     kht_init();       // Инициализация concurency hash map
     userinit();      // first user process
     __sync_synchronize();
